@@ -48,6 +48,7 @@ import static org.elasticsearch.index.query.QueryBuilders.termQuery;
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertAcked;
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertNoFailures;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.nullValue;
 
 /**
@@ -101,7 +102,7 @@ public class DocumentActionsTests extends ElasticsearchIntegrationTest {
             getResult = client().prepareGet("test", "type1", "1").setOperationThreaded(false).execute().actionGet();
             assertThat(getResult.getIndex(), equalTo(getConcreteIndexName()));
             assertThat("cycle #" + i, getResult.getSourceAsString(), equalTo(source("1", "test").string()));
-            assertThat("cycle(map) #" + i, (String) ((Map) getResult.getSourceAsMap().get("type1")).get("name"), equalTo("test"));
+            assertThat("cycle(map) #" + i, (String) getResult.getSourceAsMap().get("name"), equalTo("test"));
             getResult = client().get(getRequest("test").type("type1").id("1").operationThreaded(true)).actionGet();
             assertThat("cycle #" + i, getResult.getSourceAsString(), equalTo(source("1", "test").string()));
             assertThat(getResult.getIndex(), equalTo(getConcreteIndexName()));
@@ -109,11 +110,11 @@ public class DocumentActionsTests extends ElasticsearchIntegrationTest {
 
         logger.info("Get [type1/1] with script");
         for (int i = 0; i < 5; i++) {
-            getResult = client().prepareGet("test", "type1", "1").setFields("type1.name").execute().actionGet();
+            getResult = client().prepareGet("test", "type1", "1").setFields("name").execute().actionGet();
             assertThat(getResult.getIndex(), equalTo(getConcreteIndexName()));
             assertThat(getResult.isExists(), equalTo(true));
             assertThat(getResult.getSourceAsBytes(), nullValue());
-            assertThat(getResult.getField("type1.name").getValues().get(0).toString(), equalTo("test"));
+            assertThat(getResult.getField("name").getValues().get(0).toString(), equalTo("test"));
         }
 
         logger.info("Get [type1/2] (should be empty)");
@@ -187,8 +188,8 @@ public class DocumentActionsTests extends ElasticsearchIntegrationTest {
 
         logger.info("Delete by query");
         DeleteByQueryResponse queryResponse = client().prepareDeleteByQuery().setIndices("test").setQuery(termQuery("name", "test2")).execute().actionGet();
-        assertThat(queryResponse.getIndex(getConcreteIndexName()).getShardInfo().getTotal(), equalTo(numShards.totalNumShards));
-        assertThat(queryResponse.getIndex(getConcreteIndexName()).getShardInfo().getSuccessful(), equalTo(numShards.totalNumShards));
+        assertThat(queryResponse.getIndex(getConcreteIndexName()).getShardInfo().getTotal(), greaterThanOrEqualTo(numShards.totalNumShards));
+        assertThat(queryResponse.getIndex(getConcreteIndexName()).getShardInfo().getSuccessful(), greaterThanOrEqualTo(numShards.totalNumShards));
         assertThat(queryResponse.getIndex(getConcreteIndexName()).getShardInfo().getFailures().length, equalTo(0));
         client().admin().indices().refresh(refreshRequest("test")).actionGet();
 
@@ -320,6 +321,6 @@ public class DocumentActionsTests extends ElasticsearchIntegrationTest {
     }
 
     private XContentBuilder source(String id, String nameValue) throws IOException {
-        return XContentFactory.jsonBuilder().startObject().startObject("type1").field("id", id).field("name", nameValue).endObject().endObject();
+        return XContentFactory.jsonBuilder().startObject().field("id", id).field("name", nameValue).endObject();
     }
 }

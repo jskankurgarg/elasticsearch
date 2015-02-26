@@ -156,7 +156,7 @@ public class ParentQueryTests extends AbstractChildTests {
 
         IndexReader indexReader = DirectoryReader.open(directory);
         IndexSearcher searcher = new IndexSearcher(indexReader);
-        Engine.Searcher engineSearcher = new Engine.SimpleSearcher(
+        Engine.Searcher engineSearcher = new Engine.Searcher(
                 ParentQueryTests.class.getSimpleName(), searcher
         );
         ((TestSearchContext) SearchContext.current()).setSearcher(new ContextIndexSearcher(SearchContext.current(), engineSearcher));
@@ -183,7 +183,7 @@ public class ParentQueryTests extends AbstractChildTests {
                 indexReader.close();
                 indexReader = DirectoryReader.open(indexWriter.w, true);
                 searcher = new IndexSearcher(indexReader);
-                engineSearcher = new Engine.SimpleSearcher(
+                engineSearcher = new Engine.Searcher(
                         ParentConstantScoreQueryTests.class.getSimpleName(), searcher
                 );
                 ((TestSearchContext) SearchContext.current()).setSearcher(new ContextIndexSearcher(SearchContext.current(), engineSearcher));
@@ -197,35 +197,43 @@ public class ParentQueryTests extends AbstractChildTests {
 
             BitSetCollector collector = new BitSetCollector(indexReader.maxDoc());
             int numHits = 1 + random().nextInt(25);
-            TopScoreDocCollector actualTopDocsCollector = TopScoreDocCollector.create(numHits, false);
+            TopScoreDocCollector actualTopDocsCollector = TopScoreDocCollector.create(numHits);
             searcher.search(query, MultiCollector.wrap(collector, actualTopDocsCollector));
             FixedBitSet actualResult = collector.getResult();
 
             FixedBitSet expectedResult = new FixedBitSet(indexReader.maxDoc());
-            MockScorer mockScorer = new MockScorer(ScoreType.MAX); // just save one score per parent...
-            mockScorer.scores = new FloatArrayList();
-            TopScoreDocCollector expectedTopDocsCollector = TopScoreDocCollector.create(numHits, false);
+            TopScoreDocCollector expectedTopDocsCollector = TopScoreDocCollector.create(numHits);
             if (parentValueToChildIds.containsKey(parentValue)) {
                 LeafReader slowLeafReader = SlowCompositeReaderWrapper.wrap(indexReader);
-                final LeafCollector leafCollector = expectedTopDocsCollector.getLeafCollector(slowLeafReader.getContext());
-                leafCollector.setScorer(mockScorer);
+                final FloatArrayList[] scores = new FloatArrayList[slowLeafReader.maxDoc()];
                 Terms terms = slowLeafReader.terms(UidFieldMapper.NAME);
                 if (terms != null) {
                     NavigableMap<String, Float> childIdsAndScore = parentValueToChildIds.lget();
                     TermsEnum termsEnum = terms.iterator(null);
-                    DocsEnum docsEnum = null;
+                    PostingsEnum docsEnum = null;
                     for (Map.Entry<String, Float> entry : childIdsAndScore.entrySet()) {
                         TermsEnum.SeekStatus seekStatus = termsEnum.seekCeil(Uid.createUidAsBytes("child", entry.getKey()));
                         if (seekStatus == TermsEnum.SeekStatus.FOUND) {
-                            docsEnum = termsEnum.docs(slowLeafReader.getLiveDocs(), docsEnum, DocsEnum.FLAG_NONE);
+                            docsEnum = termsEnum.postings(slowLeafReader.getLiveDocs(), docsEnum, PostingsEnum.NONE);
                             expectedResult.set(docsEnum.nextDoc());
-                            mockScorer.scores.add(entry.getValue());
-                            leafCollector.collect(docsEnum.docID());
-                            mockScorer.scores.clear();
+                            FloatArrayList s = scores[docsEnum.docID()];
+                            if (s == null) {
+                                scores[docsEnum.docID()] = s = new FloatArrayList(2);
+                            }
+                            s.add(entry.getValue());
                         } else if (seekStatus == TermsEnum.SeekStatus.END) {
                             break;
                         }
                     }
+                }
+                MockScorer mockScorer = new MockScorer(ScoreType.MAX);
+                mockScorer.scores = new FloatArrayList();
+                final LeafCollector leafCollector = expectedTopDocsCollector.getLeafCollector(slowLeafReader.getContext());
+                leafCollector.setScorer(mockScorer);
+                for (int doc = expectedResult.nextSetBit(0); doc < slowLeafReader.maxDoc(); doc = doc + 1 >= expectedResult.length() ? DocIdSetIterator.NO_MORE_DOCS : expectedResult.nextSetBit(doc + 1)) {
+                    mockScorer.scores.clear();
+                    mockScorer.scores.addAll(scores[doc]);
+                    leafCollector.collect(doc);
                 }
             }
 

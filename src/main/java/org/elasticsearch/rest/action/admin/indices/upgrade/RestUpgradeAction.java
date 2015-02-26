@@ -90,7 +90,6 @@ public class RestUpgradeAction extends BaseRestHandler {
     
     void handlePost(RestRequest request, RestChannel channel, Client client) {
         OptimizeRequest optimizeReq = new OptimizeRequest(Strings.splitStringByCommaToArray(request.param("index")));
-        optimizeReq.waitForMerge(request.paramAsBoolean("wait_for_completion", false));
         optimizeReq.flush(true);
         optimizeReq.upgrade(true);
         optimizeReq.maxNumSegments(Integer.MAX_VALUE); // we just want to upgrade the segments, not actually optimize to a single segment
@@ -112,7 +111,8 @@ public class RestUpgradeAction extends BaseRestHandler {
             for (ShardSegments segs : shard.getShards()) {
                 for (Segment seg : segs.getSegments()) {
                     total_bytes += seg.sizeInBytes;
-                    if (seg.version.minor != Version.CURRENT.luceneVersion.minor) {
+                    if (seg.version.major != Version.CURRENT.luceneVersion.major ||
+                        seg.version.minor != Version.CURRENT.luceneVersion.minor) {
                         // TODO: this comparison is bogus! it would cause us to upgrade even with the same format
                         // instead, we should check if the codec has changed
                         to_upgrade_bytes += seg.sizeInBytes;

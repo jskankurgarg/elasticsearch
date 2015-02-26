@@ -34,7 +34,9 @@ import org.elasticsearch.index.shard.ShardId;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
- *
+ * InternalIndicesLifecycle handles invoking each listener for the Index. All
+ * exceptions thrown by listeners are logged and then re-thrown to stop further
+ * index action.
  */
 public class InternalIndicesLifecycle extends AbstractComponent implements IndicesLifecycle {
 
@@ -45,10 +47,12 @@ public class InternalIndicesLifecycle extends AbstractComponent implements Indic
         super(settings);
     }
 
+    @Override
     public void addListener(Listener listener) {
         listeners.add(listener);
     }
 
+    @Override
     public void removeListener(Listener listener) {
         listeners.remove(listener);
     }
@@ -63,12 +67,24 @@ public class InternalIndicesLifecycle extends AbstractComponent implements Indic
         }
     }
 
+    public void beforeIndexAddedToCluster(Index index, @IndexSettings Settings indexSettings) {
+        for (Listener listener : listeners) {
+            try {
+                listener.beforeIndexAddedToCluster(index, indexSettings);
+            } catch (Throwable t) {
+                logger.warn("[{}] failed to invoke before index added to cluster callback", t, index.name());
+                throw t;
+            }
+        }
+    }
+
     public void beforeIndexCreated(Index index, @IndexSettings Settings indexSettings) {
         for (Listener listener : listeners) {
             try {
                 listener.beforeIndexCreated(index, indexSettings);
             } catch (Throwable t) {
                 logger.warn("[{}] failed to invoke before index created callback", t, index.name());
+                throw t;
             }
         }
     }
@@ -79,6 +95,7 @@ public class InternalIndicesLifecycle extends AbstractComponent implements Indic
                 listener.afterIndexCreated(indexService);
             } catch (Throwable t) {
                 logger.warn("[{}] failed to invoke after index created callback", t, indexService.index().name());
+                throw t;
             }
         }
     }
@@ -89,6 +106,7 @@ public class InternalIndicesLifecycle extends AbstractComponent implements Indic
                 listener.beforeIndexShardCreated(shardId, indexSettings);
             } catch (Throwable t) {
                 logger.warn("{} failed to invoke before shard created callback", t, shardId);
+                throw t;
             }
         }
     }
@@ -99,6 +117,7 @@ public class InternalIndicesLifecycle extends AbstractComponent implements Indic
                 listener.afterIndexShardCreated(indexShard);
             } catch (Throwable t) {
                 logger.warn("{} failed to invoke after shard created callback", t, indexShard.shardId());
+                throw t;
             }
         }
     }
@@ -109,6 +128,7 @@ public class InternalIndicesLifecycle extends AbstractComponent implements Indic
                 listener.afterIndexShardPostRecovery(indexShard);
             } catch (Throwable t) {
                 logger.warn("{} failed to invoke after shard post recovery callback", t, indexShard.shardId());
+                throw t;
             }
         }
     }
@@ -119,6 +139,7 @@ public class InternalIndicesLifecycle extends AbstractComponent implements Indic
                 listener.afterIndexShardStarted(indexShard);
             } catch (Throwable t) {
                 logger.warn("{} failed to invoke after shard started callback", t, indexShard.shardId());
+                throw t;
             }
         }
     }
@@ -129,6 +150,7 @@ public class InternalIndicesLifecycle extends AbstractComponent implements Indic
                 listener.beforeIndexClosed(indexService);
             } catch (Throwable t) {
                 logger.warn("[{}] failed to invoke before index closed callback", t, indexService.index().name());
+                throw t;
             }
         }
     }
@@ -139,6 +161,7 @@ public class InternalIndicesLifecycle extends AbstractComponent implements Indic
                 listener.beforeIndexDeleted(indexService);
             } catch (Throwable t) {
                 logger.warn("[{}] failed to invoke before index deleted callback", t, indexService.index().name());
+                throw t;
             }
         }
     }
@@ -149,6 +172,7 @@ public class InternalIndicesLifecycle extends AbstractComponent implements Indic
                 listener.afterIndexDeleted(index, indexSettings);
             } catch (Throwable t) {
                 logger.warn("[{}] failed to invoke after index deleted callback", t, index.name());
+                throw t;
             }
         }
     }
@@ -159,6 +183,7 @@ public class InternalIndicesLifecycle extends AbstractComponent implements Indic
                 listener.afterIndexClosed(index, indexSettings);
             } catch (Throwable t) {
                 logger.warn("[{}] failed to invoke after index closed callback", t, index.name());
+                throw t;
             }
         }
     }
@@ -170,6 +195,7 @@ public class InternalIndicesLifecycle extends AbstractComponent implements Indic
                 listener.beforeIndexShardClosed(shardId, indexShard, indexSettings);
             } catch (Throwable t) {
                 logger.warn("{} failed to invoke before shard closed callback", t, shardId);
+                throw t;
             }
         }
     }
@@ -181,6 +207,7 @@ public class InternalIndicesLifecycle extends AbstractComponent implements Indic
                 listener.afterIndexShardClosed(shardId, indexShard, indexSettings);
             } catch (Throwable t) {
                 logger.warn("{} failed to invoke after shard closed callback", t, shardId);
+                throw t;
             }
         }
     }
@@ -191,6 +218,7 @@ public class InternalIndicesLifecycle extends AbstractComponent implements Indic
                 listener.indexShardStateChanged(indexShard, previousState, indexShard.state(), reason);
             } catch (Throwable t) {
                 logger.warn("{} failed to invoke index shard state changed callback", t, indexShard.shardId());
+                throw t;
             }
         }
     }

@@ -23,7 +23,13 @@ import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.ReaderUtil;
 import org.apache.lucene.index.memory.ExtendedMemoryIndex;
 import org.apache.lucene.index.memory.MemoryIndex;
-import org.apache.lucene.search.*;
+import org.apache.lucene.search.ConstantScoreQuery;
+import org.apache.lucene.search.Filter;
+import org.apache.lucene.search.FilteredQuery;
+import org.apache.lucene.search.MatchAllDocsQuery;
+import org.apache.lucene.search.Query;
+import org.apache.lucene.search.ScoreDoc;
+import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.CloseableThreadLocal;
 import org.elasticsearch.ElasticsearchException;
@@ -42,7 +48,6 @@ import org.elasticsearch.common.component.AbstractComponent;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
 import org.elasticsearch.common.lucene.Lucene;
-import org.elasticsearch.common.lucene.search.XCollector;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.text.BytesText;
 import org.elasticsearch.common.text.StringText;
@@ -62,13 +67,18 @@ import org.elasticsearch.index.mapper.DocumentMapper;
 import org.elasticsearch.index.mapper.FieldMapper;
 import org.elasticsearch.index.mapper.MapperService;
 import org.elasticsearch.index.mapper.ParsedDocument;
+import org.elasticsearch.index.mapper.Uid;
 import org.elasticsearch.index.mapper.internal.IdFieldMapper;
+import org.elasticsearch.index.mapper.internal.UidFieldMapper;
 import org.elasticsearch.index.percolator.stats.ShardPercolateService;
 import org.elasticsearch.index.query.ParsedQuery;
 import org.elasticsearch.index.search.nested.NonNestedDocsFilter;
 import org.elasticsearch.index.shard.IndexShard;
 import org.elasticsearch.indices.IndicesService;
-import org.elasticsearch.percolator.QueryCollector.*;
+import org.elasticsearch.percolator.QueryCollector.Count;
+import org.elasticsearch.percolator.QueryCollector.Match;
+import org.elasticsearch.percolator.QueryCollector.MatchAndScore;
+import org.elasticsearch.percolator.QueryCollector.MatchAndSort;
 import org.elasticsearch.script.ScriptService;
 import org.elasticsearch.search.SearchParseElement;
 import org.elasticsearch.search.SearchShardTarget;
@@ -86,10 +96,10 @@ import java.util.List;
 import java.util.Map;
 
 import static org.elasticsearch.index.mapper.SourceToParse.source;
-import static org.elasticsearch.percolator.QueryCollector.*;
+import static org.elasticsearch.percolator.QueryCollector.count;
+import static org.elasticsearch.percolator.QueryCollector.match;
+import static org.elasticsearch.percolator.QueryCollector.matchAndScore;
 
-/**
- */
 public class PercolatorService extends AbstractComponent {
 
     public final static float NO_SCORE = Float.NEGATIVE_INFINITY;
@@ -730,18 +740,18 @@ public class PercolatorService extends AbstractComponent {
                     hls = new ArrayList<>(topDocs.scoreDocs.length);
                 }
 
-                final FieldMapper<?> idMapper = context.mapperService().smartNameFieldMapper(IdFieldMapper.NAME);
-                final IndexFieldData<?> idFieldData = context.fieldData().getForField(idMapper);
+                final FieldMapper<?> uidMapper = context.mapperService().smartNameFieldMapper(UidFieldMapper.NAME);
+                final IndexFieldData<?> uidFieldData = context.fieldData().getForField(uidMapper);
                 int i = 0;
                 for (ScoreDoc scoreDoc : topDocs.scoreDocs) {
                     int segmentIdx = ReaderUtil.subIndex(scoreDoc.doc, percolatorSearcher.reader().leaves());
                     LeafReaderContext atomicReaderContext = percolatorSearcher.reader().leaves().get(segmentIdx);
-                    SortedBinaryDocValues values = idFieldData.load(atomicReaderContext).getBytesValues();
+                    SortedBinaryDocValues values = uidFieldData.load(atomicReaderContext).getBytesValues();
                     final int localDocId = scoreDoc.doc - atomicReaderContext.docBase;
                     values.setDocument(localDocId);
                     final int numValues = values.count();
                     assert numValues == 1;
-                    BytesRef bytes = values.valueAt(0);
+                    BytesRef bytes = Uid.splitUidIntoTypeAndId(values.valueAt(0))[1];
                     matches.add(BytesRef.deepCopyOf(bytes));
                     if (hls != null) {
                         Query query = context.percolateQueries().get(bytes);
@@ -772,11 +782,7 @@ public class PercolatorService extends AbstractComponent {
         percolatorTypeFilter = context.indexService().cache().filter().cache(percolatorTypeFilter, null, context.indexService().queryParserService().autoFilterCachePolicy());
         FilteredQuery query = new FilteredQuery(context.percolateQuery(), percolatorTypeFilter);
         percolatorSearcher.searcher().search(query, percolateCollector);
-        for (Collector queryCollector : percolateCollector.aggregatorCollector) {
-            if (queryCollector instanceof XCollector) {
-                ((XCollector) queryCollector).postCollection();
-            }
-        }
+        percolateCollector.aggregatorCollector.postCollection();
         if (context.aggregations() != null) {
             aggregationPhase.execute(context);
         }

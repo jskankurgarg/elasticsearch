@@ -33,6 +33,7 @@ import org.elasticsearch.action.support.IndicesOptions;
 import org.elasticsearch.client.Client;
 import org.elasticsearch.client.Requests;
 import org.elasticsearch.common.Strings;
+import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.ImmutableSettings.Builder;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.xcontent.XContentBuilder;
@@ -1747,10 +1748,10 @@ public class PercolatorTests extends ElasticsearchIntegrationTest {
         // The previous percolate request introduced the custom.color field, so now we register the query again
         // and the field name `color` will be resolved to `custom.color` field in mapping via smart field mapping resolving.
         client().prepareIndex("idx", PercolatorService.TYPE_NAME, "1")
-                .setSource(jsonBuilder().startObject().field("query", QueryBuilders.queryStringQuery("color:red")).endObject())
+                .setSource(jsonBuilder().startObject().field("query", QueryBuilders.queryStringQuery("custom.color:red")).endObject())
                 .get();
         client().prepareIndex("idx", PercolatorService.TYPE_NAME, "2")
-                .setSource(jsonBuilder().startObject().field("query", QueryBuilders.queryStringQuery("color:blue")).field("type", "type").endObject())
+                .setSource(jsonBuilder().startObject().field("query", QueryBuilders.queryStringQuery("custom.color:blue")).field("type", "type").endObject())
                 .get();
 
         // The second request will yield a match, since the query during the proper field during parsing.
@@ -2033,6 +2034,26 @@ public class PercolatorTests extends ElasticsearchIntegrationTest {
                 .setPercolateDoc(docBuilder().setDoc(doc))
                 .get();
         assertMatchCount(response, 3l);
+    }
+
+    @Test
+    public void testMapUnmappedFieldAsString() throws IOException{
+        // If index.percolator.map_unmapped_fields_as_string is set to true, unmapped field is mapped as an analyzed string.
+        ImmutableSettings.Builder settings = ImmutableSettings.settingsBuilder()
+                .put(indexSettings())
+                .put("index.percolator.map_unmapped_fields_as_string", true);
+        assertAcked(prepareCreate("test")
+                .setSettings(settings));
+        client().prepareIndex("test", PercolatorService.TYPE_NAME)
+                .setSource(jsonBuilder().startObject().field("query", matchQuery("field1", "value")).endObject()).get();
+        logger.info("--> Percolate doc with field1=value");
+        PercolateResponse response1 = client().preparePercolate()
+                .setIndices("test").setDocumentType("type")
+                .setPercolateDoc(docBuilder().setDoc(jsonBuilder().startObject().field("field1", "value").endObject()))
+                .execute().actionGet();
+        assertMatchCount(response1, 1l);
+        assertThat(response1.getMatches(), arrayWithSize(1));
+
     }
 }
 

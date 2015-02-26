@@ -37,7 +37,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 /**
  *
  */
-public abstract class MergeSchedulerProvider extends AbstractIndexShardComponent implements IndexShardComponent, Closeable {
+public abstract class MergeSchedulerProvider extends AbstractIndexShardComponent implements Closeable {
 
     public static interface FailureListener {
         void onFailedMerge(MergePolicy.MergeException e);
@@ -124,5 +124,6 @@ public abstract class MergeSchedulerProvider extends AbstractIndexShardComponent
 
     public abstract Set<OnGoingMerge> onGoingMerges();
 
+    @Override
     public abstract void close();
 }

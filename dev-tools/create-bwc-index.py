@@ -37,10 +37,6 @@ except ImportError as e:
   print('Can\'t import elasticsearch please install `sudo pip install elasticsearch`')
   sys.exit(1)
 
-BLACK_LIST = {'1.2.0' : { 'reason': 'Contains a major bug where routing hashes are not consistent with previous version',
-                          'issue': 'https://github.com/elasticsearch/elasticsearch/pull/6393'},
-              '1.3.0' : { 'reason': 'Lucene Related bug prevents upgrades from 0.90.7 and some earlier versions ',
-                          'issue' : 'https://github.com/elasticsearch/elasticsearch/pull/7055'}}
 # sometimes returns True
 def rarely():
   return random.randint(0, 10) == 0
@@ -117,7 +113,7 @@ def start_node(version, release_dir, data_dir, tcp_port, http_port):
     '-Des.transport.tcp.port=%s' % tcp_port,
     '-Des.http.port=%s' % http_port
   ]
-  if version.startswith('0.') or version == '1.0.0.Beta1':
+  if version.startswith('0.') or version.startswith('1.0.0.Beta') :
     cmd.append('-f') # version before 1.0 start in background automatically
   return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
@@ -135,16 +131,78 @@ def create_client(http_port, timeout=30):
     time.sleep(1)
   assert False, 'Timed out waiting for node for %s seconds' % timeout
 
-def generate_index(client):
+def generate_index(client, version):
   client.indices.delete(index='test', ignore=404)
   num_shards = random.randint(1, 10)
   num_replicas = random.randint(0, 1)
   logging.info('Create single shard test index')
+
+  mappings = {}
+  if not version.startswith('2.'):
+    # TODO: we need better "before/onOr/after" logic in python
+
+    # backcompat test for legacy type level analyzer settings, see #8874
+    mappings['analyzer_type1'] = {
+      'analyzer': 'standard',
+      'properties': {
+        'string_with_index_analyzer': {
+          'type': 'string',
+          'index_analyzer': 'standard'
+        },
+        'completion_with_index_analyzer': {
+          'type': 'completion',
+          'index_analyzer': 'standard'
+        }
+      }
+    }
+    mappings['analyzer_type2'] = {
+      'index_analyzer': 'standard',
+      'search_analyzer': 'keyword',
+      'search_quote_analyzer': 'english',
+    }
+    mappings['index_name_and_path'] = {
+      'properties': {
+        'parent_multi_field': {
+          'type': 'string',
+          'path': 'just_name',
+          'fields': {
+            'raw': {'type': 'string', 'index': 'not_analyzed', 'index_name': 'raw_multi_field'}
+          }
+        },
+        'field_with_index_name': {
+          'type': 'string',
+          'index_name': 'custom_index_name_for_field'
+        }
+      }
+    }
+    mappings['meta_fields'] = {
+      '_id': {
+        'path': 'myid'
+      },
+      '_routing': {
+        'path': 'myrouting'
+      } 
+    }
+    mappings['custom_formats'] = {
+      'properties': {
+        'string_with_custom_postings': {
+          'type': 'string',
+          'postings_format': 'Lucene41'
+        },
+        'long_with_custom_doc_values': {
+          'type': 'long',
+          'doc_values_format': 'Lucene42'
+        }
+      }
+    }
+
+
   client.indices.create(index='test', body={
       'settings': {
           'number_of_shards': 1,
           'number_of_replicas': 0
-      }
+      },
+      'mappings': mappings
   })
   health = client.cluster.health(wait_for_status='green', wait_for_relocating_shards=0)
   assert health['timed_out'] == False, 'cluster health timed out %s' % health
@@ -154,16 +212,60 @@ def generate_index(client):
   logging.info('Running basic asserts on the data added')
   run_basic_asserts(client, 'test', 'doc', num_docs)
 
+def snapshot_index(client, cfg):
+  # Add bogus persistent settings to make sure they can be restored
+  client.cluster.put_settings(body={
+    'persistent': {
+      'cluster.routing.allocation.exclude.version_attr': cfg.version
+    }
+  })
+  client.indices.put_template(name='template_' + cfg.version.lower(), order=0, body={
+    "template": "te*",
+    "settings": {
+      "number_of_shards" : 1
+    },
+    "mappings": {
+      "type1": {
+        "_source": { "enabled" : False }
+      }
+    },
+    "aliases": {
+      "alias1": {},
+      "alias2": {
+        "filter": {
+          "term": {"version" : cfg.version }
+        },
+        "routing": "kimchy"
+      },
+      "{index}-alias": {}
+    }
+  })
+  client.snapshot.create_repository(repository='test_repo', body={
+    'type': 'fs',
+    'settings': {
+      'location': cfg.repo_dir
+    }
+  })
+  client.snapshot.create(repository='test_repo', snapshot='test_1', wait_for_completion=True)
+  client.snapshot.delete_repository(repository='test_repo')
+
 def compress_index(version, tmp_dir, output_dir):
+  compress(tmp_dir, output_dir, 'index-%s.zip' % version, 'data')
+
+def compress_repo(version, tmp_dir, output_dir):
+  compress(tmp_dir, output_dir, 'repo-%s.zip' % version, 'repo')
+
+def compress(tmp_dir, output_dir, zipfile, directory):
   abs_output_dir = os.path.abspath(output_dir)
-  zipfile = os.path.join(abs_output_dir, 'index-%s.zip' % version)
+  zipfile = os.path.join(abs_output_dir, zipfile)
   if os.path.exists(zipfile):
     os.remove(zipfile)
   logging.info('Compressing index into %s', zipfile)
   olddir = os.getcwd()
   os.chdir(tmp_dir)
-  subprocess.check_call('zip -r %s *' % zipfile, shell=True)
+  subprocess.check_call('zip -r %s %s' % (zipfile, directory), shell=True)
   os.chdir(olddir)
+
 
 def parse_config():
   parser = argparse.ArgumentParser(description='Builds an elasticsearch index for backwards compatibility tests')
@@ -179,12 +281,6 @@ def parse_config():
                       help='The port to use as the minimum port for HTTP communication')
   cfg = parser.parse_args()
 
-  if cfg.version in BLACK_LIST:
-    entry = BLACK_LIST[cfg.version]
-    msg = 'Cannot use version %s\n  reason: %s\n  issue: %s' % \
-          (cfg.version, entry['reason'], entry['issue'])
-    parser.error(msg)
-
   cfg.release_dir = os.path.join(cfg.releases_dir, 'elasticsearch-%s' % cfg.version)
   if not os.path.exists(cfg.release_dir):
     parser.error('ES version %s does not exist in %s' % (cfg.version, cfg.releases_dir)) 
@@ -194,7 +290,10 @@ def parse_config():
 
   cfg.tmp_dir = tempfile.mkdtemp()
   cfg.data_dir = os.path.join(cfg.tmp_dir, 'data')
+  cfg.repo_dir = os.path.join(cfg.tmp_dir, 'repo')
   logging.info('Temp data dir: %s' % cfg.data_dir)
+  logging.info('Temp repo dir: %s' % cfg.repo_dir)
+  cfg.snapshot_supported = not (cfg.version.startswith('0.') or cfg.version == '1.0.0.Beta1')
 
   return cfg
 
@@ -203,17 +302,21 @@ def main():
                       datefmt='%Y-%m-%d %I:%M:%S %p')
   logging.getLogger('elasticsearch').setLevel(logging.ERROR)
   logging.getLogger('urllib3').setLevel(logging.WARN)
-
   cfg = parse_config()
   try:
     node = start_node(cfg.version, cfg.release_dir, cfg.data_dir, cfg.tcp_port, cfg.http_port)
     client = create_client(cfg.http_port)
-    generate_index(client)
+    generate_index(client, cfg.version)
+    if cfg.snapshot_supported:
+      snapshot_index(client, cfg)
   finally:
     if 'node' in vars():
       logging.info('Shutting down node with pid %d', node.pid)
       node.terminate()
+      time.sleep(1) # some nodes take time to terminate
   compress_index(cfg.version, cfg.tmp_dir, cfg.output_dir)
+  if cfg.snapshot_supported:
+    compress_repo(cfg.version, cfg.tmp_dir, cfg.output_dir)
 
 if __name__ == '__main__':
   try:

@@ -78,14 +78,14 @@ public abstract class ActionWriteResponse extends ActionResponse {
         }
 
         /**
-         * @return the total number of shards the write should go to.
+         * @return the total number of shards the write should go to (replicas and primaries). This includes relocating shards, so this number can be higher than the number of shards.
          */
         public int getTotal() {
             return total;
         }
 
         /**
-         * @return the total number of shards the write succeeded on.
+         * @return the total number of shards the write succeeded on (replicas and primaries). This includes relocating shards, so this number can be higher than the number of shards.
          */
         public int getSuccessful() {
             return successful;
@@ -198,6 +198,7 @@ public abstract class ActionWriteResponse extends ActionResponse {
             /**
              * @return On what index the failure occurred.
              */
+            @Override
             public String index() {
                 return index;
             }
@@ -205,6 +206,7 @@ public abstract class ActionWriteResponse extends ActionResponse {
             /**
              * @return On what shard id the failure occurred.
              */
+            @Override
             public int shardId() {
                 return shardId;
             }
@@ -220,6 +222,7 @@ public abstract class ActionWriteResponse extends ActionResponse {
             /**
              * @return A text description of the failure
              */
+            @Override
             public String reason() {
                 return reason;
             }
@@ -227,6 +230,7 @@ public abstract class ActionWriteResponse extends ActionResponse {
             /**
              * @return The status to report if this failure was a primary failure.
              */
+            @Override
             public RestStatus status() {
                 return status;
             }

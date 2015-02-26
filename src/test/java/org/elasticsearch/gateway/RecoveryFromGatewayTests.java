@@ -40,6 +40,7 @@ import org.junit.Test;
 
 import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_NUMBER_OF_REPLICAS;
 import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_NUMBER_OF_SHARDS;
+import static org.elasticsearch.common.settings.ImmutableSettings.settingsBuilder;
 import static org.elasticsearch.common.xcontent.XContentFactory.jsonBuilder;
 import static org.elasticsearch.index.query.QueryBuilders.matchAllQuery;
 import static org.elasticsearch.index.query.QueryBuilders.termQuery;
@@ -55,15 +56,11 @@ import static org.hamcrest.Matchers.*;
 @Slow
 public class RecoveryFromGatewayTests extends ElasticsearchIntegrationTest {
 
-    private ImmutableSettings.Builder settingsBuilder() {
-        return ImmutableSettings.settingsBuilder().put("gateway.type", "local");
-    }
-
     @Test
     @Slow
     public void testOneNodeRecoverFromGateway() throws Exception {
 
-        internalCluster().startNode(settingsBuilder().build());
+        internalCluster().startNode();
 
         String mapping = XContentFactory.jsonBuilder().startObject().startObject("type1")
                 .startObject("properties").startObject("appAccountIds").field("type", "string").endObject().endObject()
@@ -112,7 +109,7 @@ public class RecoveryFromGatewayTests extends ElasticsearchIntegrationTest {
     @Slow
     public void testSingleNodeNoFlush() throws Exception {
 
-        internalCluster().startNode(settingsBuilder().build());
+        internalCluster().startNode();
 
         String mapping = XContentFactory.jsonBuilder().startObject().startObject("type1")
                 .startObject("properties").startObject("field").field("type", "string").endObject().startObject("num").field("type", "integer").endObject().endObject()
@@ -200,7 +197,7 @@ public class RecoveryFromGatewayTests extends ElasticsearchIntegrationTest {
     @Slow
     public void testSingleNodeWithFlush() throws Exception {
 
-        internalCluster().startNode(settingsBuilder().build());
+        internalCluster().startNode();
         client().prepareIndex("test", "type1", "1").setSource(jsonBuilder().startObject().field("field", "value1").endObject()).execute().actionGet();
         flush();
         client().prepareIndex("test", "type1", "2").setSource(jsonBuilder().startObject().field("field", "value2").endObject()).execute().actionGet();
@@ -234,8 +231,8 @@ public class RecoveryFromGatewayTests extends ElasticsearchIntegrationTest {
     @Slow
     public void testTwoNodeFirstNodeCleared() throws Exception {
 
-        final String firstNode = internalCluster().startNode(settingsBuilder().build());
-        internalCluster().startNode(settingsBuilder().build());
+        final String firstNode = internalCluster().startNode();
+        internalCluster().startNode();
 
         client().prepareIndex("test", "type1", "1").setSource(jsonBuilder().startObject().field("field", "value1").endObject()).execute().actionGet();
         flush();
@@ -370,7 +367,7 @@ public class RecoveryFromGatewayTests extends ElasticsearchIntegrationTest {
         }
         logger.info("Running Cluster Health");
         ensureGreen();
-        client().admin().indices().prepareOptimize("test").setWaitForMerge(true).setMaxNumSegments(100).get(); // just wait for merges
+        client().admin().indices().prepareOptimize("test").setMaxNumSegments(100).get(); // just wait for merges
         client().admin().indices().prepareFlush().setWaitIfOngoing(true).setForce(true).get();
 
         logger.info("--> disabling allocation while the cluster is shut down");
@@ -404,18 +401,18 @@ public class RecoveryFromGatewayTests extends ElasticsearchIntegrationTest {
             if (!recoveryState.getPrimary()) {
                 logger.info("--> replica shard {} recovered from {} to {}, recovered {}, reuse {}",
                         response.getShardId(), recoveryState.getSourceNode().name(), recoveryState.getTargetNode().name(),
-                        recoveryState.getIndex().recoveredTotalSize(), recoveryState.getIndex().reusedByteCount());
-                assertThat("no bytes should be recovered", recoveryState.getIndex().recoveredByteCount(), equalTo(0l));
-                assertThat("data should have been reused", recoveryState.getIndex().reusedByteCount(), greaterThan(0l));
-                assertThat("all bytes should be reused", recoveryState.getIndex().reusedByteCount(), equalTo(recoveryState.getIndex().totalByteCount()));
+                        recoveryState.getIndex().recoveredBytes(), recoveryState.getIndex().reusedBytes());
+                assertThat("no bytes should be recovered", recoveryState.getIndex().recoveredBytes(), equalTo(0l));
+                assertThat("data should have been reused", recoveryState.getIndex().reusedBytes(), greaterThan(0l));
+                assertThat("all bytes should be reused", recoveryState.getIndex().reusedBytes(), equalTo(recoveryState.getIndex().totalBytes()));
                 assertThat("no files should be recovered", recoveryState.getIndex().recoveredFileCount(), equalTo(0));
                 assertThat("all files should be reused", recoveryState.getIndex().reusedFileCount(), equalTo(recoveryState.getIndex().totalFileCount()));
                 assertThat("> 0 files should be reused", recoveryState.getIndex().reusedFileCount(), greaterThan(0));
-                assertThat("all bytes should be reused bytes",
-                        recoveryState.getIndex().reusedByteCount(), greaterThan(recoveryState.getIndex().numberOfRecoveredBytes()));
             } else {
-                assertThat(recoveryState.getIndex().recoveredByteCount(), equalTo(recoveryState.getIndex().reusedByteCount()));
-                assertThat(recoveryState.getIndex().recoveredFileCount(), equalTo(recoveryState.getIndex().reusedFileCount()));
+                assertThat(recoveryState.getIndex().recoveredBytes(), equalTo(0l));
+                assertThat(recoveryState.getIndex().reusedBytes(), equalTo(recoveryState.getIndex().totalBytes()));
+                assertThat(recoveryState.getIndex().recoveredFileCount(), equalTo(0));
+                assertThat(recoveryState.getIndex().reusedFileCount(), equalTo(recoveryState.getIndex().totalFileCount()));
             }
         }
 

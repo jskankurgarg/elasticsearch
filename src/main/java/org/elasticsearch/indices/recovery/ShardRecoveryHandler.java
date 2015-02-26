@@ -24,15 +24,17 @@ import com.google.common.collect.Lists;
 import org.apache.lucene.index.CorruptIndexException;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
+import org.apache.lucene.util.ArrayUtil;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.ExceptionsHelper;
 import org.elasticsearch.cluster.ClusterService;
 import org.elasticsearch.cluster.ClusterState;
-import org.elasticsearch.cluster.ProcessedClusterStateNonMasterUpdateTask;
+import org.elasticsearch.cluster.TimeoutClusterStateUpdateTask;
 import org.elasticsearch.cluster.action.index.MappingUpdatedAction;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.metadata.MappingMetaData;
 import org.elasticsearch.common.Nullable;
+import org.elasticsearch.common.Priority;
 import org.elasticsearch.common.StopWatch;
 import org.elasticsearch.common.bytes.BytesArray;
 import org.elasticsearch.common.collect.ImmutableOpenMap;
@@ -61,6 +63,8 @@ import org.elasticsearch.transport.RemoteTransportException;
 import org.elasticsearch.transport.TransportRequestOptions;
 import org.elasticsearch.transport.TransportService;
 
+import java.io.IOException;
+import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
@@ -70,9 +74,9 @@ import java.util.concurrent.atomic.AtomicReference;
  * everything relating to copying the segment files as well as sending translog
  * operations across the wire once the segments have been copied.
  */
-public final class ShardRecoveryHandler implements Engine.RecoveryHandler {
+public class ShardRecoveryHandler implements Engine.RecoveryHandler {
 
-    private final ESLogger logger;
+    protected final ESLogger logger;
     // Shard that is going to be recovered (the "source")
     private final IndexShard shard;
     private final String indexName;
@@ -195,8 +199,7 @@ public final class ShardRecoveryHandler implements Engine.RecoveryHandler {
                 @Override
                 public void run() throws InterruptedException {
                     RecoveryFilesInfoRequest recoveryInfoFilesRequest = new RecoveryFilesInfoRequest(request.recoveryId(), request.shardId(),
-                            response.phase1FileNames, response.phase1FileSizes, response.phase1ExistingFileNames, response.phase1ExistingFileSizes,
-                            response.phase1TotalSize, response.phase1ExistingTotalSize);
+                            response.phase1FileNames, response.phase1FileSizes, response.phase1ExistingFileNames, response.phase1ExistingFileSizes);
                     transportService.submitRequest(request.targetNode(), RecoveryTarget.Actions.FILES_INFO, recoveryInfoFilesRequest,
                             TransportRequestOptions.options().withTimeout(recoverySettings.internalActionTimeout()),
                             EmptyTransportResponseHandler.INSTANCE_SAME).txGet();
@@ -238,6 +241,7 @@ public final class ShardRecoveryHandler implements Engine.RecoveryHandler {
                         logger.debug("Failed to transfer file [" + name + "] on recovery");
                     }
 
+                    @Override
                     public void onAfter() {
                         // Signify this file has completed by decrementing the latch
                         latch.countDown();
@@ -293,7 +297,7 @@ public final class ShardRecoveryHandler implements Engine.RecoveryHandler {
                         } catch (Throwable e) {
                             final Throwable corruptIndexException;
                             if ((corruptIndexException = ExceptionsHelper.unwrapCorruption(e)) != null) {
-                                if (store.checkIntegrity(md) == false) { // we are corrupted on the primary -- fail!
+                                if (store.checkIntegrityNoException(md) == false) { // we are corrupted on the primary -- fail!
                                     logger.warn("{} Corrupted file detected {} checksum mismatch", shard.shardId(), md);
                                     if (corruptedEngine.compareAndSet(null, corruptIndexException) == false) {
                                         // if we are not the first exception, add ourselves as suppressed to the main one:
@@ -344,13 +348,49 @@ public final class ShardRecoveryHandler implements Engine.RecoveryHandler {
                     // Once the files have been renamed, any other files that are not
                     // related to this recovery (out of date segments, for example)
                     // are deleted
-                    transportService.submitRequest(request.targetNode(), RecoveryTarget.Actions.CLEAN_FILES,
-                            new RecoveryCleanFilesRequest(request.recoveryId(), shard.shardId(), recoverySourceMetadata),
-                            TransportRequestOptions.options().withTimeout(recoverySettings.internalActionTimeout()),
-                            EmptyTransportResponseHandler.INSTANCE_SAME).txGet();
+                    try {
+                        transportService.submitRequest(request.targetNode(), RecoveryTarget.Actions.CLEAN_FILES,
+                                new RecoveryCleanFilesRequest(request.recoveryId(), shard.shardId(), recoverySourceMetadata),
+                                TransportRequestOptions.options().withTimeout(recoverySettings.internalActionTimeout()),
+                                EmptyTransportResponseHandler.INSTANCE_SAME).txGet();
+                    } catch (RemoteTransportException remoteException) {
+                        final IOException corruptIndexException;
+                        // we realized that after the index was copied and we wanted to finalize the recovery
+                        // the index was corrupted:
+                        //   - maybe due to a broken segments file on an empty index (transferred with no checksum)
+                        //   - maybe due to old segments without checksums or length only checks
+                        if ((corruptIndexException = ExceptionsHelper.unwrapCorruption(remoteException)) != null) {
+                            try {
+                                final Store.MetadataSnapshot recoverySourceMetadata = store.getMetadata(snapshot);
+                                StoreFileMetaData[] metadata = Iterables.toArray(recoverySourceMetadata, StoreFileMetaData.class);
+                                ArrayUtil.timSort(metadata, new Comparator<StoreFileMetaData>() {
+                                    @Override
+                                    public int compare(StoreFileMetaData o1, StoreFileMetaData o2) {
+                                        return Long.compare(o1.length(), o2.length()); // check small files first
+                                    }
+                                });
+                                for (StoreFileMetaData md : metadata) {
+                                    logger.debug("{} checking integrity for file {} after remove corruption exception", shard.shardId(), md);
+                                    if (store.checkIntegrityNoException(md) == false) { // we are corrupted on the primary -- fail!
+                                        logger.warn("{} Corrupted file detected {} checksum mismatch", shard.shardId(), md);
+                                        throw corruptIndexException;
+                                    }
+                                }
+                            } catch (IOException ex) {
+                                remoteException.addSuppressed(ex);
+                                throw remoteException;
+                            }
+                            // corruption has happened on the way to replica
+                            RemoteTransportException exception = new RemoteTransportException("File corruption occurred on recovery but checksums are ok", null);
+                            exception.addSuppressed(remoteException);
+                            logger.warn("{} Remote file corruption during finalization on node {}, recovering {}. local checksum OK",
+                                    corruptIndexException, shard.shardId(), request.targetNode());
+                        } else {
+                            throw remoteException;
+                        }
+                    }
                 }
             });
-
             stopWatch.stop();
             logger.trace("[{}][{}] recovery [phase1] to {}: took [{}]", indexName, shardId, request.targetNode(), stopWatch.totalTime());
             response.phase1Time = stopWatch.totalTime().millis();
@@ -429,11 +469,12 @@ public final class ShardRecoveryHandler implements Engine.RecoveryHandler {
             throw new IndexShardClosedException(request.shardId());
         }
         cancellableThreads.checkForCancel();
-        logger.trace("[{}][{}] recovery [phase3] to {}: sending transaction log operations", indexName, shardId, request.targetNode());
         StopWatch stopWatch = new StopWatch().start();
+        final int totalOperations;
+        logger.trace("[{}][{}] recovery [phase3] to {}: sending transaction log operations", indexName, shardId, request.targetNode());
 
         // Send the translog operations to the target node
-        int totalOperations = sendSnapshot(snapshot);
+        totalOperations = sendSnapshot(snapshot);
 
         cancellableThreads.execute(new Interruptable() {
             @Override
@@ -480,44 +521,20 @@ public final class ShardRecoveryHandler implements Engine.RecoveryHandler {
         // while we're checking
         final BlockingQueue<DocumentMapper> documentMappersToUpdate = ConcurrentCollections.newBlockingQueue();
         final CountDownLatch latch = new CountDownLatch(1);
-        clusterService.submitStateUpdateTask("recovery_mapping_check", new ProcessedClusterStateNonMasterUpdateTask() {
-            @Override
-            public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
-                latch.countDown();
-            }
+        final AtomicReference<Throwable> mappingCheckException = new AtomicReference<>();
 
-            @Override
-            public ClusterState execute(ClusterState currentState) throws Exception {
-                IndexMetaData indexMetaData = clusterService.state().metaData().getIndices().get(indexService.index().getName());
-                ImmutableOpenMap<String, MappingMetaData> metaDataMappings = null;
-                if (indexMetaData != null) {
-                    metaDataMappings = indexMetaData.getMappings();
-                }
-                // default mapping should not be sent back, it can only be updated by put mapping API, and its
-                // a full in place replace, we don't want to override a potential update coming it
-                for (DocumentMapper documentMapper : indexService.mapperService().docMappers(false)) {
-
-                    MappingMetaData mappingMetaData = metaDataMappings == null ? null : metaDataMappings.get(documentMapper.type());
-                    if (mappingMetaData == null || !documentMapper.refreshSource().equals(mappingMetaData.source())) {
-                        // not on master yet in the right form
-                        documentMappersToUpdate.add(documentMapper);
-                    }
-                }
-                return currentState;
-            }
-
-            @Override
-            public void onFailure(String source, @Nullable Throwable t) {
-                logger.error("unexpected error while checking for pending mapping changes", t);
-                latch.countDown();
-            }
-        });
+        // we use immediate as this is a very light weight check and we don't wait to delay recovery
+        clusterService.submitStateUpdateTask("recovery_mapping_check", Priority.IMMEDIATE, new MappingUpdateTask(clusterService, indexService, recoverySettings, latch, documentMappersToUpdate, mappingCheckException, this.cancellableThreads));
         cancellableThreads.execute(new Interruptable() {
             @Override
             public void run() throws InterruptedException {
                 latch.await();
             }
         });
+        if (mappingCheckException.get() != null) {
+            logger.warn("error during mapping check, failing recovery", mappingCheckException.get());
+            throw new ElasticsearchException("error during mapping check", mappingCheckException.get());
+        }
         if (documentMappersToUpdate.isEmpty()) {
             return;
         }
@@ -561,7 +578,7 @@ public final class ShardRecoveryHandler implements Engine.RecoveryHandler {
      *
      * @return the total number of translog operations that were sent
      */
-    private int sendSnapshot(Translog.Snapshot snapshot) throws ElasticsearchException {
+    protected int sendSnapshot(Translog.Snapshot snapshot) throws ElasticsearchException {
         int ops = 0;
         long size = 0;
         int totalOperations = 0;
@@ -640,5 +657,73 @@ public final class ShardRecoveryHandler implements Engine.RecoveryHandler {
                 ", sourceNode=" + request.sourceNode() +
                 ", targetNode=" + request.targetNode() +
                 '}';
+    }
+
+    // this is a static class since we are holding an instance to the IndexShard
+    // on ShardRecoveryHandler which can not be GCed if the recovery is canceled
+    // but this task is still stuck in the queue. This can be problematic if the
+    // queue piles up and recoveries fail and can lead to OOM or memory pressure if lots of shards
+    // are created and removed.
+    private static class MappingUpdateTask extends TimeoutClusterStateUpdateTask {
+        private final CountDownLatch latch;
+        private final BlockingQueue<DocumentMapper> documentMappersToUpdate;
+        private final AtomicReference<Throwable> mappingCheckException;
+        private final CancellableThreads cancellableThreads;
+        private ClusterService clusterService;
+        private IndexService indexService;
+        private RecoverySettings recoverySettings;
+
+        public MappingUpdateTask(ClusterService clusterService, IndexService indexService, RecoverySettings recoverySettings, CountDownLatch latch, BlockingQueue<DocumentMapper> documentMappersToUpdate, AtomicReference<Throwable> mappingCheckException, CancellableThreads cancellableThreads) {
+            this.latch = latch;
+            this.documentMappersToUpdate = documentMappersToUpdate;
+            this.mappingCheckException = mappingCheckException;
+            this.clusterService = clusterService;
+            this.indexService = indexService;
+            this.recoverySettings = recoverySettings;
+            this.cancellableThreads = cancellableThreads;
+        }
+
+        @Override
+        public boolean runOnlyOnMaster() {
+            return false;
+        }
+
+        @Override
+        public TimeValue timeout() {
+            return recoverySettings.internalActionTimeout();
+        }
+
+        @Override
+        public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
+            latch.countDown();
+        }
+
+        @Override
+        public ClusterState execute(ClusterState currentState) throws Exception {
+            if (cancellableThreads.isCancelled() == false) { // no need to run this if recovery is canceled
+                IndexMetaData indexMetaData = clusterService.state().metaData().getIndices().get(indexService.index().getName());
+                ImmutableOpenMap<String, MappingMetaData> metaDataMappings = null;
+                if (indexMetaData != null) {
+                    metaDataMappings = indexMetaData.getMappings();
+                }
+                // default mapping should not be sent back, it can only be updated by put mapping API, and its
+                // a full in place replace, we don't want to override a potential update coming into it
+                for (DocumentMapper documentMapper : indexService.mapperService().docMappers(false)) {
+
+                    MappingMetaData mappingMetaData = metaDataMappings == null ? null : metaDataMappings.get(documentMapper.type());
+                    if (mappingMetaData == null || !documentMapper.refreshSource().equals(mappingMetaData.source())) {
+                        // not on master yet in the right form
+                        documentMappersToUpdate.add(documentMapper);
+                    }
+                }
+            }
+            return currentState;
+        }
+
+        @Override
+        public void onFailure(String source, Throwable t) {
+            mappingCheckException.set(t);
+            latch.countDown();
+        }
     }
 }

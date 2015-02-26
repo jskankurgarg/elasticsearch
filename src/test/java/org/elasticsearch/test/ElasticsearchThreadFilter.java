@@ -27,8 +27,7 @@ import java.util.regex.Pattern;
 
 /**
  * Simple thread filter for randomized runner
- * This filter rejectes all threads that are known to leak across
- * tests / suites ie. the global test cluster threads etc.
+ * This filter rejectes all threads that are known to leak across tests / suites
  * It will cause threads leaking from threadpools / executors in unittests
  * to fail the test.
  */
@@ -36,7 +35,6 @@ public final class ElasticsearchThreadFilter implements ThreadFilter {
 
     private final Pattern nodePrefix = Pattern.compile("\\[(" +
             "(" + Pattern.quote(InternalTestCluster.TRANSPORT_CLIENT_PREFIX) + ")?(" +
-            Pattern.quote(ElasticsearchIntegrationTest.GLOBAL_CLUSTER_NODE_PREFIX) + "|" +
             Pattern.quote(ElasticsearchIntegrationTest.SUITE_CLUSTER_NODE_PREFIX) + "|" +
             Pattern.quote(ElasticsearchIntegrationTest.TEST_CLUSTER_NODE_PREFIX) + "|" +
             Pattern.quote(ExternalTestCluster.EXTERNAL_CLUSTER_PREFIX) + "|" +

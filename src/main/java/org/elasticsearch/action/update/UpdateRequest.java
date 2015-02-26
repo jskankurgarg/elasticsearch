@@ -133,6 +133,7 @@ public class UpdateRequest extends InstanceShardOperationRequest<UpdateRequest> 
     /**
      * The type of the indexed document.
      */
+    @Override
     public String type() {
         return type;
     }
@@ -148,6 +149,7 @@ public class UpdateRequest extends InstanceShardOperationRequest<UpdateRequest> 
     /**
      * The id of the indexed document.
      */
+    @Override
     public String id() {
         return id;
     }
@@ -164,6 +166,7 @@ public class UpdateRequest extends InstanceShardOperationRequest<UpdateRequest> 
      * Controls the shard routing of the request. Using this value to hash the shard
      * and not the id.
      */
+    @Override
     public UpdateRequest routing(String routing) {
         if (routing != null && routing.length() == 0) {
             this.routing = null;
@@ -177,6 +180,7 @@ public class UpdateRequest extends InstanceShardOperationRequest<UpdateRequest> 
      * Controls the shard routing of the request. Using this value to hash the shard
      * and not the id.
      */
+    @Override
     public String routing() {
         return this.routing;
     }
@@ -631,7 +635,7 @@ public class UpdateRequest extends InstanceShardOperationRequest<UpdateRequest> 
         super.readFrom(in);
         replicationType = ReplicationType.fromId(in.readByte());
         consistencyLevel = WriteConsistencyLevel.fromId(in.readByte());
-        type = in.readSharedString();
+        type = in.readString();
         id = in.readString();
         routing = in.readOptionalString();
         script = in.readOptionalString();
@@ -669,7 +673,7 @@ public class UpdateRequest extends InstanceShardOperationRequest<UpdateRequest> 
         super.writeTo(out);
         out.writeByte(replicationType.id());
         out.writeByte(consistencyLevel.id());
-        out.writeSharedString(type);
+        out.writeString(type);
         out.writeString(id);
         out.writeOptionalString(routing);
         out.writeOptionalString(script);

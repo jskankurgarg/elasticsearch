@@ -56,7 +56,7 @@ public class ExceptionRetryTests extends ElasticsearchIntegrationTest {
     @Override
     protected Settings nodeSettings(int nodeOrdinal) {
         return ImmutableSettings.builder()
-                .put(super.nodeSettings(nodeOrdinal)).put("gateway.type", "local")
+                .put(super.nodeSettings(nodeOrdinal))
                 .put(TransportModule.TRANSPORT_SERVICE_TYPE_KEY, MockTransportService.class.getName())
                 .build();
     }
@@ -67,7 +67,6 @@ public class ExceptionRetryTests extends ElasticsearchIntegrationTest {
      * see https://github.com/elasticsearch/elasticsearch/issues/8788
      */
     @Test
-    @LuceneTestCase.AwaitsFix(bugUrl = "https://github.com/elasticsearch/elasticsearch/issues/8788")
     public void testRetryDueToExceptionOnNetworkLayer() throws ExecutionException, InterruptedException, IOException {
         final AtomicBoolean exceptionThrown = new AtomicBoolean(false);
         int numDocs = scaledRandomIntBetween(100, 1000);

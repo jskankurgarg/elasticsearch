@@ -24,6 +24,7 @@ import org.apache.lucene.document.FieldType;
 import org.apache.lucene.document.NumericDocValuesField;
 import org.apache.lucene.index.IndexOptions;
 import org.elasticsearch.Version;
+import org.elasticsearch.action.TimestampParsingException;
 import org.elasticsearch.common.Explicit;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.Strings;
@@ -31,10 +32,13 @@ import org.elasticsearch.common.joda.FormatDateTimeFormatter;
 import org.elasticsearch.common.joda.Joda;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentBuilder;
-import org.elasticsearch.index.codec.docvaluesformat.DocValuesFormatProvider;
-import org.elasticsearch.index.codec.docvaluesformat.DocValuesFormatService;
-import org.elasticsearch.index.codec.postingsformat.PostingsFormatProvider;
-import org.elasticsearch.index.mapper.*;
+import org.elasticsearch.index.mapper.InternalMapper;
+import org.elasticsearch.index.mapper.Mapper;
+import org.elasticsearch.index.mapper.MapperParsingException;
+import org.elasticsearch.index.mapper.MergeContext;
+import org.elasticsearch.index.mapper.MergeMappingException;
+import org.elasticsearch.index.mapper.ParseContext;
+import org.elasticsearch.index.mapper.RootMapper;
 import org.elasticsearch.index.mapper.core.DateFieldMapper;
 import org.elasticsearch.index.mapper.core.LongFieldMapper;
 import org.elasticsearch.index.mapper.core.NumberFieldMapper;
@@ -86,6 +90,7 @@ public class TimestampFieldMapper extends DateFieldMapper implements InternalMap
         private FormatDateTimeFormatter dateTimeFormatter = Defaults.DATE_TIME_FORMATTER;
         private String defaultTimestamp = Defaults.DEFAULT_TIMESTAMP;
         private boolean explicitStore = false;
+        private Boolean ignoreMissing = null;
 
         public Builder() {
             super(Defaults.NAME, new FieldType(Defaults.FIELD_TYPE), Defaults.PRECISION_STEP_64_BIT);
@@ -111,6 +116,11 @@ public class TimestampFieldMapper extends DateFieldMapper implements InternalMap
             return builder;
         }
 
+        public Builder ignoreMissing(boolean ignoreMissing) {
+            this.ignoreMissing = ignoreMissing;
+            return builder;
+        }
+
         @Override
         public Builder store(boolean store) {
             explicitStore = true;
@@ -124,7 +134,8 @@ public class TimestampFieldMapper extends DateFieldMapper implements InternalMap
                 fieldType.setStored(false);
             }
             return new TimestampFieldMapper(fieldType, docValues, enabledState, path, dateTimeFormatter, defaultTimestamp,
-                    ignoreMalformed(context), coerce(context), postingsProvider, docValuesProvider, normsLoading, fieldDataSettings, context.indexSettings());
+                    ignoreMissing,
+                    ignoreMalformed(context), coerce(context), normsLoading, fieldDataSettings, context.indexSettings());
         }
     }
 
@@ -133,6 +144,8 @@ public class TimestampFieldMapper extends DateFieldMapper implements InternalMap
         public Mapper.Builder parse(String name, Map<String, Object> node, ParserContext parserContext) throws MapperParsingException {
             TimestampFieldMapper.Builder builder = timestamp();
             parseField(builder, builder.name, node, parserContext);
+            boolean defaultSet = false;
+            Boolean ignoreMissing = null;
             for (Iterator<Map.Entry<String, Object>> iterator = node.entrySet().iterator(); iterator.hasNext();) {
                 Map.Entry<String, Object> entry = iterator.next();
                 String fieldName = Strings.toUnderscoreCase(entry.getKey());
@@ -148,10 +161,33 @@ public class TimestampFieldMapper extends DateFieldMapper implements InternalMap
                     builder.dateTimeFormatter(parseDateTimeFormatter(fieldNode.toString()));
                     iterator.remove();
                 } else if (fieldName.equals("default")) {
-                    builder.defaultTimestamp(fieldNode == null ? null : fieldNode.toString());
+                    if (fieldNode == null) {
+                        if (parserContext.indexVersionCreated().onOrAfter(Version.V_1_4_0_Beta1) &&
+                                parserContext.indexVersionCreated().before(Version.V_1_5_0)) {
+                            // We are reading an index created in 1.4 with feature #7036
+                            // `default: null` was explicitly set. We need to change this index to
+                            // `ignore_missing: false`
+                            builder.ignoreMissing(false);
+                        } else {
+                            throw new TimestampParsingException("default timestamp can not be set to null");
+                        }
+                    } else {
+                        builder.defaultTimestamp(fieldNode.toString());
+                        defaultSet = true;
+                    }
+                    iterator.remove();
+                } else if (fieldName.equals("ignore_missing")) {
+                    ignoreMissing = nodeBooleanValue(fieldNode);
+                    builder.ignoreMissing(ignoreMissing);
                     iterator.remove();
                 }
             }
+
+            // We can not accept a default value and rejecting null values at the same time
+            if (defaultSet && (ignoreMissing != null && ignoreMissing == false)) {
+                throw new TimestampParsingException("default timestamp can not be set with ignore_missing set to false");
+            }
+
             return builder;
         }
     }
@@ -165,26 +201,28 @@ public class TimestampFieldMapper extends DateFieldMapper implements InternalMap
     private final String path;
     private final String defaultTimestamp;
     private final FieldType defaultFieldType;
+    private final Boolean ignoreMissing;
 
     public TimestampFieldMapper(Settings indexSettings) {
         this(new FieldType(defaultFieldType(indexSettings)), null, Defaults.ENABLED, Defaults.PATH, Defaults.DATE_TIME_FORMATTER, Defaults.DEFAULT_TIMESTAMP,
-             Defaults.IGNORE_MALFORMED, Defaults.COERCE, null, null, null, null, indexSettings);
+             null, Defaults.IGNORE_MALFORMED, Defaults.COERCE, null, null, indexSettings);
     }
 
     protected TimestampFieldMapper(FieldType fieldType, Boolean docValues, EnabledAttributeMapper enabledState, String path,
                                    FormatDateTimeFormatter dateTimeFormatter, String defaultTimestamp,
-                                   Explicit<Boolean> ignoreMalformed, Explicit<Boolean> coerce, PostingsFormatProvider postingsProvider,
-                                   DocValuesFormatProvider docValuesProvider, Loading normsLoading,
+                                   Boolean ignoreMissing,
+                                   Explicit<Boolean> ignoreMalformed, Explicit<Boolean> coerce, Loading normsLoading,
                                    @Nullable Settings fieldDataSettings, Settings indexSettings) {
         super(new Names(Defaults.NAME, Defaults.NAME, Defaults.NAME, Defaults.NAME), dateTimeFormatter,
                 Defaults.PRECISION_STEP_64_BIT, Defaults.BOOST, fieldType, docValues,
                 Defaults.NULL_VALUE, TimeUnit.MILLISECONDS /*always milliseconds*/,
-                ignoreMalformed, coerce, postingsProvider, docValuesProvider, null, normsLoading, fieldDataSettings, 
+                ignoreMalformed, coerce, null, normsLoading, fieldDataSettings, 
                 indexSettings, MultiFields.empty(), null);
         this.enabledState = enabledState;
         this.path = path;
         this.defaultTimestamp = defaultTimestamp;
         this.defaultFieldType = defaultFieldType(indexSettings);
+        this.ignoreMissing = ignoreMissing;
     }
 
     @Override
@@ -204,6 +242,11 @@ public class TimestampFieldMapper extends DateFieldMapper implements InternalMap
         return this.defaultTimestamp;
     }
 
+    public Boolean ignoreMissing() {
+        return this.ignoreMissing;
+    }
+
+    @Override
     public FormatDateTimeFormatter dateTimeFormatter() {
         return this.dateTimeFormatter;
     }
@@ -292,22 +335,13 @@ public class TimestampFieldMapper extends DateFieldMapper implements InternalMap
         if (includeDefaults || !Defaults.DEFAULT_TIMESTAMP.equals(defaultTimestamp)) {
             builder.field("default", defaultTimestamp);
         }
+        if (includeDefaults || ignoreMissing != null) {
+            builder.field("ignore_missing", ignoreMissing);
+        }
         if (customFieldDataSettings != null) {
             builder.field("fielddata", (Map) customFieldDataSettings.getAsMap());
         } else if (includeDefaults) {
             builder.field("fielddata", (Map) fieldDataType.getSettings().getAsMap());
-        }
-
-        if (docValuesFormat != null) {
-            if (includeDefaults || !docValuesFormat.name().equals(defaultDocValuesFormat())) {
-                builder.field(DOC_VALUES_FORMAT, docValuesFormat.name());
-            }
-        } else if (includeDefaults) {
-            String format = defaultDocValuesFormat();
-            if (format == null) {
-                format = DocValuesFormatService.DEFAULT_FORMAT;
-            }
-            builder.field(DOC_VALUES_FORMAT, format);
         }
 
         builder.endObject();

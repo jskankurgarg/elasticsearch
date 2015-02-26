@@ -114,7 +114,7 @@ public class RestTestExecutionContext implements Closeable {
      * Extracts a specific value from the last saved response
      */
     public Object response(String path) throws IOException {
-        return response.evaluate(path);
+        return response.evaluate(path, stash);
     }
 
     /**
@@ -125,7 +125,7 @@ public class RestTestExecutionContext implements Closeable {
             restClient = new RestClient(restSpec, settings, addresses);
         } else {
             //re-initialize the REST client if the addresses have changed
-            //happens if there's a failure since we restart the global cluster due to that
+            //happens if there's a failure since we restart the suite cluster due to that
             Set<InetSocketAddress> newAddresses = Sets.newHashSet(addresses);
             Set<InetSocketAddress> previousAddresses = Sets.newHashSet(restClient.httpAddresses());
             if (!newAddresses.equals(previousAddresses)) {
@@ -158,6 +158,7 @@ public class RestTestExecutionContext implements Closeable {
     /**
      * Closes the execution context and releases the underlying resources
      */
+    @Override
     public void close() {
         if (restClient != null) {
             restClient.close();

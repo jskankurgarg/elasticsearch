@@ -57,7 +57,6 @@ public class MinimumMasterNodesTests extends ElasticsearchIntegrationTest {
                 .put("discovery.zen.minimum_master_nodes", 2)
                 .put("discovery.zen.ping_timeout", "200ms")
                 .put("discovery.initial_state_timeout", "500ms")
-                .put("gateway.type", "local")
                 .build();
 
         logger.info("--> start first node");
@@ -101,6 +100,7 @@ public class MinimumMasterNodesTests extends ElasticsearchIntegrationTest {
 
         internalCluster().stopCurrentMasterNode();
         awaitBusy(new Predicate<Object>() {
+            @Override
             public boolean apply(Object obj) {
                 ClusterState state = client().admin().cluster().prepareState().setLocal(true).execute().actionGet().getState();
                 return state.blocks().hasGlobalBlock(DiscoverySettings.NO_MASTER_BLOCK_ID);
@@ -138,6 +138,7 @@ public class MinimumMasterNodesTests extends ElasticsearchIntegrationTest {
 
         internalCluster().stopRandomNonMasterNode();
         assertThat(awaitBusy(new Predicate<Object>() {
+            @Override
             public boolean apply(Object obj) {
                 ClusterState state = client().admin().cluster().prepareState().setLocal(true).execute().actionGet().getState();
                 return state.blocks().hasGlobalBlock(DiscoverySettings.NO_MASTER_BLOCK_ID);
@@ -175,7 +176,6 @@ public class MinimumMasterNodesTests extends ElasticsearchIntegrationTest {
                 .put("discovery.zen.minimum_master_nodes", 3)
                 .put("discovery.zen.ping_timeout", "1s")
                 .put("discovery.initial_state_timeout", "500ms")
-                .put("gateway.type", "local")
                 .build();
 
         logger.info("--> start first 2 nodes");
@@ -185,6 +185,7 @@ public class MinimumMasterNodesTests extends ElasticsearchIntegrationTest {
         ClusterState state;
 
         awaitBusy(new Predicate<Object>() {
+            @Override
             public boolean apply(Object obj) {
                 ClusterState state = client().admin().cluster().prepareState().setLocal(true).execute().actionGet().getState();
                 return state.blocks().hasGlobalBlock(DiscoverySettings.NO_MASTER_BLOCK_ID);
@@ -192,6 +193,7 @@ public class MinimumMasterNodesTests extends ElasticsearchIntegrationTest {
         });
 
         awaitBusy(new Predicate<Object>() {
+            @Override
             public boolean apply(Object obj) {
                 ClusterState state = client().admin().cluster().prepareState().setLocal(true).execute().actionGet().getState();
                 return state.blocks().hasGlobalBlock(DiscoverySettings.NO_MASTER_BLOCK_ID);
@@ -265,7 +267,6 @@ public class MinimumMasterNodesTests extends ElasticsearchIntegrationTest {
                 .put("discovery.type", "zen")
                 .put("discovery.zen.ping_timeout", "400ms")
                 .put("discovery.initial_state_timeout", "500ms")
-                .put("gateway.type", "local")
                 .build();
 
         logger.info("--> start 2 nodes");
@@ -298,6 +299,7 @@ public class MinimumMasterNodesTests extends ElasticsearchIntegrationTest {
 
     private void assertNoMasterBlockOnAllNodes() throws InterruptedException {
         assertThat(awaitBusy(new Predicate<Object>() {
+            @Override
             public boolean apply(Object obj) {
                 boolean success = true;
                 for (Client client : internalCluster()) {
@@ -318,8 +320,7 @@ public class MinimumMasterNodesTests extends ElasticsearchIntegrationTest {
         ImmutableSettings.Builder settings = settingsBuilder()
                 .put("discovery.type", "zen")
                 .put("discovery.zen.ping_timeout", "200ms")
-                .put("discovery.initial_state_timeout", "500ms")
-                .put("gateway.type", "local");
+                .put("discovery.initial_state_timeout", "500ms");
 
         // set an initial value which is at least quorum to avoid split brains during initial startup
         int initialMinMasterNodes = randomIntBetween(nodeCount / 2 + 1, nodeCount);

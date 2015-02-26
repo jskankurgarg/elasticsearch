@@ -23,16 +23,20 @@ import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.FieldType;
 import org.apache.lucene.index.IndexOptions;
+import org.elasticsearch.Version;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.lucene.Lucene;
-import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentBuilder;
-import org.elasticsearch.index.codec.docvaluesformat.DocValuesFormatProvider;
-import org.elasticsearch.index.codec.postingsformat.PostingsFormatProvider;
 import org.elasticsearch.index.fielddata.FieldDataType;
-import org.elasticsearch.index.mapper.*;
+import org.elasticsearch.index.mapper.InternalMapper;
+import org.elasticsearch.index.mapper.Mapper;
+import org.elasticsearch.index.mapper.MapperParsingException;
+import org.elasticsearch.index.mapper.MergeContext;
+import org.elasticsearch.index.mapper.MergeMappingException;
+import org.elasticsearch.index.mapper.ParseContext;
+import org.elasticsearch.index.mapper.RootMapper;
 import org.elasticsearch.index.mapper.core.AbstractFieldMapper;
 
 import java.io.IOException;
@@ -91,7 +95,7 @@ public class RoutingFieldMapper extends AbstractFieldMapper<String> implements I
 
         @Override
         public RoutingFieldMapper build(BuilderContext context) {
-            return new RoutingFieldMapper(fieldType, required, path, postingsProvider, docValuesProvider, fieldDataSettings, context.indexSettings());
+            return new RoutingFieldMapper(fieldType, required, path, fieldDataSettings, context.indexSettings());
         }
     }
 
@@ -107,7 +111,7 @@ public class RoutingFieldMapper extends AbstractFieldMapper<String> implements I
                 if (fieldName.equals("required")) {
                     builder.required(nodeBooleanValue(fieldNode));
                     iterator.remove();
-                } else if (fieldName.equals("path")) {
+                } else if (fieldName.equals("path") && parserContext.indexVersionCreated().before(Version.V_2_0_0)) {
                     builder.path(fieldNode.toString());
                     iterator.remove();
                 }
@@ -118,17 +122,15 @@ public class RoutingFieldMapper extends AbstractFieldMapper<String> implements I
 
 
     private boolean required;
-
     private final String path;
 
-    public RoutingFieldMapper() {
-        this(new FieldType(Defaults.FIELD_TYPE), Defaults.REQUIRED, Defaults.PATH, null, null, null, ImmutableSettings.EMPTY);
+    public RoutingFieldMapper(Settings indexSettings) {
+        this(Defaults.FIELD_TYPE, Defaults.REQUIRED, Defaults.PATH, null, indexSettings);
     }
 
-    protected RoutingFieldMapper(FieldType fieldType, boolean required, String path, PostingsFormatProvider postingsProvider,
-                                 DocValuesFormatProvider docValuesProvider, @Nullable Settings fieldDataSettings, Settings indexSettings) {
+    protected RoutingFieldMapper(FieldType fieldType, boolean required, String path, @Nullable Settings fieldDataSettings, Settings indexSettings) {
         super(new Names(Defaults.NAME, Defaults.NAME, Defaults.NAME, Defaults.NAME), 1.0f, fieldType, null, Lucene.KEYWORD_ANALYZER,
-                Lucene.KEYWORD_ANALYZER, postingsProvider, docValuesProvider, null, null, fieldDataSettings, indexSettings);
+                Lucene.KEYWORD_ANALYZER, null, null, fieldDataSettings, indexSettings);
         this.required = required;
         this.path = path;
     }
@@ -234,7 +236,7 @@ public class RoutingFieldMapper extends AbstractFieldMapper<String> implements I
         if (includeDefaults || required != Defaults.REQUIRED) {
             builder.field("required", required);
         }
-        if (includeDefaults || path != Defaults.PATH) {
+        if (writePre2xSettings && (includeDefaults || path != Defaults.PATH)) {
             builder.field("path", path);
         }
         builder.endObject();
